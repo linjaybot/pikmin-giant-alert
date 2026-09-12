@@ -1,0 +1,17 @@
+# 런타임 산출물 — 클론한 폴더에서 그대로 실행하면 여기 생긴다. 커밋/충돌 대상 아님
+state.json
+heartbeat.json
+widget_pref.json
+known_giants.json
+sweeping.lock
+*.log
+watch.log
+recover.log
+hits/
+joins/
+frames/
+crop_tmp/
+llm_*.png
+__pycache__/
+*.pyc
+.DS_Store
