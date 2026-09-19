@@ -71,6 +71,11 @@ LLM_TIMEOUT = 120
 # 비전 판정이 CLUSTER(군집)라 애매할 때만 하단 카드 리스트를 끝까지 넘겨 거대 카드가 있는지 확인(사용자 요청 8/16)
 SWEEP_ON = ("CLUSTER",)
 SWEEP_COOLDOWN = 180         # 초. 리스트 넘기기 최소 간격
+# ⏱️ 정기 전체 점검 주기(초). 9/19 사고의 직접 원인:
+# 봇은 화면에 보이는 카드(카루셀 12장 중 1~2장)만 읽는다. 거대가 뒤쪽에 있으면 존재를 모른다.
+# 그런데 전체를 훑는 sweep이 'LLM이 CLUSTER 판정했을 때'라는 조건부라, 16:41~17:39 58분 동안
+# 한 번도 안 돌았고 그 사이 뜬 거대(큐브 정자)를 한참 뒤에야 발견했다. 이제 조건 없이 주기적으로 돈다.
+SWEEP_INTERVAL_SEC = 180
 SWEEP_MAX_SWIPES = 16
 SWEEP_LOCK = os.path.join(os.path.expanduser("~/pikmin-watch"), "sweeping.lock")  # 넘기는 동안 복구 데몬이 마우스 안 건드리게
 CLICLICK = "/opt/homebrew/bin/cliclick"
@@ -1164,6 +1169,25 @@ def main():
                                  alert_on_fail=False)
             else:
                 card_streak = 0
+
+            # ---------- D) 정기 전체 목록 점검 ----------
+            # 위 B)는 '지금 화면에 보이는' 카드만 본다. 카루셀은 12장 중 1~2장만 노출되므로
+            # 뒤쪽에 뜬 거대는 존재조차 모른다. 예전엔 전체 점검이 LLM CLUSTER 판정에 딸린
+            # 조건부라 58분간 안 돈 적이 있다(9/19). 이제 주기적으로 무조건 한 번 훑는다.
+            if time.time() - last_sweep >= SWEEP_INTERVAL_SEC:
+                last_sweep = time.time()
+                found = sweep_cards(win)
+                kc = state.setdefault("known_cards", {})
+                sweep_new = [k2 for k2 in found if known_card_key(kc, k2) is None]
+                for k2 in found:
+                    kc[known_card_key(kc, k2) or k2] = time.time()
+                save_state(state)
+                if sweep_new:
+                    p = snap(tmp)
+                    log(f"🍄 새 거대 카드(정기 점검)!! {[found[k2] for k2 in sweep_new]} snap={p}")
+                    handle_new_giant(win, state, "리스트 정기 점검", prefer_keys=set(sweep_new))
+                elif found:
+                    log(f"정기 점검: 거대 카드 {list(found.values())} (전부 확인된 것)")
 
         except KeyboardInterrupt:
             log("종료")
