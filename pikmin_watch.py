@@ -99,6 +99,11 @@ JOIN_BUTTON_TEXTS = ("참가", "참가하기", "참여")
 # 피크민 선택 화면 우하단의 전송 버튼. 현재 스킨은 동그란 'GO' 버튼(9/13 실측 (556,1275) 부근)
 GO_BUTTON_TEXTS = ("GO", "GO!", "전송", "확정", "보내기")
 GO_BUTTON_XY = (560, 1285)   # OCR이 GO를 못 읽을 때 바로 쓰는 고정 좌표(644폭 기준)
+# ⛔ 유한한 자원을 소모하는 확인 팝업. 이 단어가 보이면 절대 승인하지 않고 취소한다.
+# 9/19 사고: 5명이 찬 방은 티켓이 있어야 들어갈 수 있는데, "티켓을 사용해서 참가하시겠습니까?"
+# 팝업의 OK를 봇이 눌러 사용자 티켓을 1장(소지 수 10→9) 말없이 소모했다.
+COST_CONFIRM_WORDS = ("티켓", "소지 수", "구매", "결제", "코인", "유료", "루비", "젬")
+CANCEL_TEXTS = ("취소", "아니오", "닫기", "Cancel")
 JOIN_MAX_SWIPES = 16
 # 맵 아이콘을 탭해서 열린 상세가 이 문구를 포함하면 버섯이 아님(과일 탐험 등) → 오탐 기각 (8/23 레몬 사건)
 NOT_GIANT_MARKERS = ("탐험으로", "피크민을 탐험에", "발견한 날")
@@ -634,6 +639,19 @@ def finish_join(wid, b):
             tap(b, xy[0], xy[1])
             confirm_tapped = True
             continue
+        # ⛔ 자원(티켓 등)을 소모하는 확인 팝업은 절대 자동 승인하지 않는다.
+        # 9/19 사고: 5명이 찬 방에 참가하려면 티켓이 필요한데, "티켓을 사용해서 참가하시겠습니까?"
+        # 팝업의 OK를 이 코드가 눌러 사용자의 티켓 1장(10→9)을 말없이 써버렸다.
+        # 이런 팝업은 취소를 누르고 참가를 포기한다(풀방은 어차피 티켓 없이 못 들어감).
+        if any(w in joined for w in COST_CONFIRM_WORDS):
+            cancel = next(((x, y) for t, x, y in bx if t.strip() in CANCEL_TEXTS), None)
+            p = join_snap(f, "ticket_declined")
+            if cancel:
+                tap(b, cancel[0], cancel[1])
+                log(f"참가 중단: 티켓 등 자원을 요구하는 팝업 → 취소 누름 snap={p}")
+            else:
+                log(f"참가 중단: 티켓 등 자원을 요구하는 팝업(취소 버튼 못 찾음) snap={p}")
+            return "needs_ticket"
         ok = next(((x, y) for t, x, y in bx if t.strip() in ("확인", "OK", "네", "예")), None)
         if ok:
             log(f"참가: 확인 팝업 탭 ({int(ok[0])},{int(ok[1])})")
@@ -699,9 +717,15 @@ def join_giant(win, prefer_keys=None, map_xy=None, known_cards=None):
             log(f"참가: 카드 탭 '{disp}' ({int(cx)},{int(cy)})")
             tap(b, cx, cy)
         time.sleep(1.2)          # 9/13: 2.5 → 1.2 (상세 화면은 보통 1초 안에 뜬다)
-        # 2) 상세 화면에서 '참가' 버튼 찾기 (로딩 대비 5회 재시도, 짧은 간격)
+        # 2) 상세 화면에서 '참가' 버튼 찾기.
+        # ⚠️ 탭이 씹히는 경우가 있다(9/19 17:39 사고): 카드가 화면 오른쪽에 있을 때 제목 텍스트의
+        # OCR 중심을 탭했는데, 제목은 카드 왼쪽 정렬이라 그 좌표가 카드 경계 근처였고 카루셀이
+        # 스냅 중이라 히트박스를 벗어났다. 그런데 예전 코드는 재탭을 안 하고 화면만 6초 보다가
+        # 포기하고 헛알람을 울렸다. 그래서 '아직 리스트 화면'이면 좌표를 옮겨가며 다시 탭한다.
+        # 오프셋은 제목 중심 기준: 카드 중앙 쪽(오른쪽), 카드 이미지 영역(위), 반대쪽 순.
+        retaps = [(110, 0), (0, -75), (-110, 0)] if target is not None else []
         last_texts = []
-        for attempt in range(5):
+        for attempt in range(6):
             if not capture_window(wid, f):
                 return None
             join_snap(f, f"step{attempt}")
@@ -723,7 +747,10 @@ def join_giant(win, prefer_keys=None, map_xy=None, known_cards=None):
             log(f"참가: '{btn[0]}' 버튼 탭 ({int(btn[1])},{int(btn[2])})")
             tap(b, btn[1], btn[2])
             # '참가' 탭 후엔 '보낼 피크민 선택' 화면이 이어짐 — 자동 선택→확정까지 끝내야 진짜 참가
-            if finish_join(wid, b):
+            fin = finish_join(wid, b)
+            if fin == "needs_ticket":
+                return "needs_ticket"      # 풀방이라 티켓 필요 → 알람 없이 넘어간다
+            if fin:
                 log("참가 성공(피크민 전송 완료)")
                 return tapped
             return None
@@ -776,6 +803,15 @@ def handle_new_giant(win, state, reason, prefer_keys=None, map_xy=None, alert_on
                 ]
                 save_state(state)
             log("오탐(버섯 아님) → 알림 생략")
+            return
+        if res == "needs_ticket":
+            # 5명이 찬 방 — 티켓을 써야만 들어갈 수 있다. 티켓은 유한하므로 봇이 임의로 쓰지 않는다.
+            # 같은 카드로 반복 시도하지 않도록 확인 시각만 기록하고 조용히 끝낸다.
+            kc3 = state.setdefault("known_cards", {})
+            for k3 in (prefer_keys or []):
+                kc3[known_card_key(kc3, k3) or k3] = time.time()
+            save_state(state)
+            log("풀방(5명)이라 티켓이 필요함 → 티켓 안 쓰고 건너뜀, 알림 생략")
             return
         if res == "already_joined":
             # known_cards는 join_giant 안에서 이미 갱신됨(같은 dict 참조) — 저장만 하면 됨
