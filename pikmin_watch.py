@@ -61,6 +61,11 @@ KNOWN_CARD_RECHECK_SEC = 1800  # 보조 안전망: 카루셀이 앞으로 안 �
 KNOWN_CARD_TTL = 86400         # 캐시 하드 만료(초)
 LOC_KEY_LEN = 8              # 카드 키에 쓸 장소명 길이(정규화 후 앞 N자)
 LOC_KEY_MIN = 4              # 키 접두사 비교 최소 길이 — 이보다 짧게 겹치면 다른 카드로 본다
+# 카드의 '장소' 줄로 착각하면 안 되는 UI 텍스트(9/20 사고: 화면 오른쪽에 반쯤 걸린 거대 카드의
+# 장소를 못 읽고, 우하단 버튼 '데코 일람'을 장소로 집어 엉뚱한 좌표를 탭했다)
+NOT_LOC_TEXTS = ("데코 일람", "살펴보기", "전체 보기", "모족 및 과일", "버섯 개수",
+                 "오늘은 앞으로", "모두의 작업력", "여기로 이동", "친구에게 도움 요청",
+                 "버섯 제거 완료", "탐험", "모종", "엽서", "피크민", "라이프 로그")
 CARD_LOC_DY = (55, 135)      # 카드 제목 아래 위치(•장소) 줄의 세로 거리 범위(px, 644폭 기준)
 CARD_LOC_DX = 170            # 제목-장소 가로 중심 거리 허용치(카드 폭 ~400, 옆 카드는 ~390 떨어짐)
 # 사이즈 기반 후보 검출 + LLM 최종 판정 (거대버섯 생김새가 매달 바뀌어도 동작)
@@ -112,6 +117,10 @@ CANCEL_TEXTS = ("취소", "아니오", "닫기", "Cancel")
 JOIN_MAX_SWIPES = 16
 # 맵 아이콘을 탭해서 열린 상세가 이 문구를 포함하면 버섯이 아님(과일 탐험 등) → 오탐 기각 (8/23 레몬 사건)
 NOT_GIANT_MARKERS = ("탐험으로", "피크민을 탐험에", "발견한 날")
+# 거대 상세 화면에 있다는 표식. 상세까지 갔는데 '참가' 버튼도 '당신'도 없으면
+# = 5명이 차서 못 들어가는 방(초대받은 카드는 못 들어가도 1번에 온다 — 9/20 사용자 확인).
+# 이건 봇 잘못이 아니므로 알람을 울리지 않는다. 반대로 상세에 못 들어간 것(리스트 그대로)은 탭 실패다.
+DETAIL_MARKERS = ("모두의 작업력", "여기로 이동", "남았습니다", "친구에게 도움 요청", "보상")
 
 BASE = os.path.expanduser("~/pikmin-watch")
 TEMPLATE_DIR = os.path.join(BASE, "templates")
@@ -267,6 +276,8 @@ def giant_card_boxes(boxes):
             if CARD_LOC_DY[0] <= dy <= CARD_LOC_DY[1] and abs(cx2 - cx) < CARD_LOC_DX:
                 cand = t2.strip().lstrip("•·・●.oOe0 ").strip()
                 if not cand or cand[0].isdigit():      # HP 숫자 줄 등은 제외
+                    continue
+                if any(w in cand for w in NOT_LOC_TEXTS):   # UI 버튼/배너는 장소가 아니다
                     continue
                 d = abs(cx2 - cx)
                 if best is None or d < best:
@@ -781,6 +792,10 @@ def join_giant(win, prefer_keys=None, map_xy=None, known_cards=None):
                 return tapped
             return None
         p = join_snap(f, "nobtn")
+        joined_last = " ".join(last_texts)
+        if any(m in joined_last for m in DETAIL_MARKERS):
+            log(f"참가: 상세는 열렸는데 참가 버튼 없음 → 5명 찬 방으로 판단, 알람 생략 snap={p}")
+            return "full_room"
         # 탭해서 열린 상세가 버섯이 아니면(레몬 등 과일 탐험 상세) 실패가 아니라 오탐 — 알람 대신 기각 (8/23 레몬 사건)
         if any(mk in " ".join(last_texts) for mk in NOT_GIANT_MARKERS):
             log(f"참가: 열린 상세가 버섯이 아님(과일/탐험 오브젝트) → 오탐 기각 snap={p}")
@@ -829,6 +844,15 @@ def handle_new_giant(win, state, reason, prefer_keys=None, map_xy=None, alert_on
                 ]
                 save_state(state)
             log("오탐(버섯 아님) → 알림 생략")
+            return
+        if res == "full_room":
+            # 이미 5명이 차서 참가 버튼 자체가 없는 방 — 봇이 할 수 있는 게 없다.
+            # 같은 카드로 매 프레임 재시도하지 않도록 확인 시각만 남기고 조용히 끝낸다.
+            kc4 = state.setdefault("known_cards", {})
+            for k4 in (prefer_keys or []):
+                kc4[known_card_key(kc4, k4) or k4] = time.time()
+            save_state(state)
+            log("5명 찬 방(참가 버튼 없음) → 알림 생략")
             return
         if res == "needs_ticket":
             # 5명이 찬 방 — 티켓을 써야만 들어갈 수 있다. 티켓은 유한하므로 봇이 임의로 쓰지 않는다.
