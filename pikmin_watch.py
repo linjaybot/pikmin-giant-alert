@@ -323,8 +323,10 @@ def card_keys(boxes):
 def parse_card_page(texts):
     """하단 리스트의 '버섯 개수: N/M' 인디케이터 → (N, M). 못 읽으면 None.
 
-    9/13 사용자 제공 정보: 내가 이미 참가한 카드는 리스트 첫 화면에 절대 안 오고 항상 맨 뒤로 밀린다.
-    따라서 N==1(첫 화면)에 보이는 거대 카드는 '내가 안 들어간 것'으로 확정할 수 있다.
+    9/20 사용자 확정: 리스트는 '참가 가능한 것이 앞, 참가 불가능한 것이 뒤'로 정렬된다.
+    참가 불가능 = 내가 이미 참가했거나, 5명이 차서 풀방(티켓 없이는 못 들어감)인 경우.
+    따라서 N==1(첫 화면)에 보이는 거대 카드는 '지금 참가할 수 있는 것'으로 볼 수 있다
+    (= 내가 안 들어갔고 자리도 남았다 → 티켓 없이 참가 가능).
     실측으로 확인: 미참가 거대가 보일 때 '버섯 개수: 1/11', 참가 중 거대가 보일 때 '버섯 개수: 11/ 11'.
     이 신호가 있으면 카드를 탭해서 '당신'을 확인하지 않고도 리스폰 여부를 판정할 수 있다.
     """
@@ -499,22 +501,39 @@ def sweep_cards(win):
     def read():
         f = "/tmp/pikmin_sweep.png"
         if not capture_window(wid, f):
-            return None, {}
+            return None, {}, None
         bx = ocr_boxes(f)
-        return [t for t, _, _ in bx if t.startswith(("거대", "중형", "소형"))], card_keys(bx)
+        page = parse_card_page([t for t, _, _ in bx])
+        return ([t for t, _, _ in bx if t.startswith(("거대", "중형", "소형"))],
+                card_keys(bx), page)
     found, prev, n = {}, None, 0
+    page = last_page = None
+    stuck = 0
     open(SWEEP_LOCK, "w").close()
     try:
         subprocess.run(["osascript", "-e", 'tell application "iPhone Mirroring" to activate'], capture_output=True)
         time.sleep(0.4)
         for _ in range(SWEEP_MAX_SWIPES):
-            titles, keys = read()
+            titles, keys, page = read()
             if titles is None:
                 break
             found.update(keys)
+            # 끝까지 봤는지는 '버섯 개수: N/M' 인디케이터로 판정한다(9/20 수정).
+            # 예전엔 '화면이 안 바뀌면 종료'라, 스와이프가 안 먹혀서 못 넘어간 것과
+            # 정말 끝에 도달한 것을 구분하지 못했다. 새벽 내내 '스와이프 1회'로 끝나
+            # 전수 확인이 됐는지조차 알 수 없었다.
+            if page and page[0] >= page[1]:
+                break                       # 마지막 장까지 봤다
             if titles == prev:
-                break
-            prev = titles
+                stuck += 1
+                if page is None and stuck >= 2:
+                    break                   # 인디케이터를 못 읽는 화면 — 예전 방식으로 종료
+                if stuck >= 3:
+                    log(f"⚠️ 리스트 넘기기가 먹히지 않음(같은 화면 {stuck}회, 위치 {page}) — 전수 확인 실패")
+                    break
+            else:
+                stuck = 0
+            prev, last_page = titles, page
             swipe(-380); n += 1
             time.sleep(1.0)
         for _ in range(n + 2):
@@ -524,7 +543,9 @@ def sweep_cards(win):
             os.remove(SWEEP_LOCK)
         except Exception:
             pass
-    log(f"리스트 넘겨보기: 스와이프 {n}회, 거대 카드 {list(found.values())}")
+    seen = f"{page[0]}/{page[1]}" if page else "?"
+    complete = "전수확인" if (page and page[0] >= page[1]) else "미완"
+    log(f"리스트 넘겨보기: 스와이프 {n}회, 위치 {seen}({complete}), 거대 카드 {list(found.values())}")
     return found
 
 
@@ -1127,9 +1148,10 @@ def main():
                 k2: v for k2, v in known_cards.items() if now - v < KNOWN_CARD_TTL
             }
             known_cards = state["known_cards"]
-            # 리스트 위치로 참가 여부를 판정한다. 참가한 카드는 첫 화면에 오지 않으므로
-            # '버섯 개수: 1/M' 화면에 거대 카드가 보이면 안 들어간 것이다 → 같은 장소 키가
+            # 리스트 위치로 판정한다(9/20 확정: 참가 가능한 것이 앞, 불가능한 것이 뒤).
+            # '버섯 개수: 1/M' 화면에 거대 카드가 보이면 지금 참가할 수 있는 것이다 → 같은 장소 키가
             # known_cards에 있어도(어제 참가했다가 사라지고 같은 자리에 다시 뜬 경우) 참가 대상으로 본다.
+            # 풀방이면 애초에 뒤로 밀리므로 여기서 티켓 팝업을 만날 일도 거의 없다.
             page = parse_card_page(texts)
             first_page = page is not None and page[0] == 1
             fresh_keys, recheck_keys = [], []
@@ -1140,7 +1162,7 @@ def main():
                 elif not AUTO_JOIN:
                     continue                     # 탭해서 확인할 수단이 없으면 재확인 의미 없음
                 elif first_page and now - known_cards[hit] >= FIRSTPAGE_RETRY_SEC:
-                    recheck_keys.append(k2)      # 첫 화면 = 미참가 확정(리스폰이거나 자리가 났음)
+                    recheck_keys.append(k2)      # 첫 화면 = 지금 참가 가능(리스폰이거나 자리가 났음)
                 elif now - known_cards[hit] >= KNOWN_CARD_RECHECK_SEC:
                     recheck_keys.append(k2)      # 위치 신호를 못 쓴 경우의 보조 안전망
             if fresh_keys:
