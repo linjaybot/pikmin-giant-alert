@@ -37,6 +37,10 @@ SAME_CLICK_LIMIT = 2       # 같은 자리 클릭 판단이 이 횟수 연속이
 FAIL_BACKOFF = 300         # 복구 실패 3회 연속이면 이만큼(초) 쉬고 재시도
 KEEPAWAKE_EVERY = 300      # 맥 화면보호기/잠금 방지: 이 간격(초)으로 마우스 1px 이동+복귀 (8/16 새벽 3시간 무입력 → 잠금 → 미러링 9시간 정지 재발 방지)
 LLM_TIMEOUT = 120
+# ⚠️ 9/20 사고: "iPhone 사용 중 — 연결하려면 iPhone을 잠그십시오" 상태가 7시간 지속됐는데
+# 사용자에게 아무 알림이 없었다. 이 상태는 사람이 폰을 잠가야만 풀리므로(애플 제한) 반드시 알려야 한다.
+PAUSED_ALERT_AFTER = 300      # paused가 이만큼(초) 지속되면 첫 알림
+PAUSED_ALERT_REPEAT = 1800    # 이후 반복 알림 간격(초)
 BUSY_WORDS = ("사용 중", "종료되었습니다", "잠그십시오", "시간 초과", "연결하려면", "연결하기 전에", "다시 시도", "오류가 발생",
               "일시 정지", "일시정지", "연결이 끊", "연결할 수 없")  # 8/16: "연결이 일시 정지됨 [재개]"를 9시간 동안 LLM 클릭 루프로 돌린 사고 방지  # 미러링 안내/오류 화면(폰 잠그면 [연결]/[다시 시도] 눌러야 붙음)
 CLICK_COOLDOWN = 20        # 클릭 후 화면 반영 대기
@@ -308,6 +312,16 @@ def keep_mac_awake():
         log(f"깨우기 실패: {e}")
 
 
+def notify_paused(minutes):
+    """폰을 잠가야만 풀리는 상태 — 봇이 스스로 할 수 있는 게 없으니 사람을 부른다."""
+    log(f"⚠️ {minutes}분째 미러링 끊김(iPhone 사용 중) → 사용자 알림 발송")
+    msg = f"아이폰을 잠가야 다시 연결됩니다. {minutes}분째 거대버섯 감시가 멈춰 있습니다."
+    subprocess.run(["osascript", "-e",
+                    f'display notification "{msg}" with title "🍄 피크민 감시 중단" sound name "Sosumi"'],
+                   capture_output=True)
+    subprocess.run(["afplay", "-v", "2", "/System/Library/Sounds/Sosumi.aiff"], capture_output=True)
+
+
 def classify(texts):
     joined = " ".join(texts)
     if any(w in joined for w in BUSY_WORDS):
@@ -415,6 +429,8 @@ def main():
     log(f"미러링 복구 데몬 시작 (주기 {INTERVAL}s)")
     streak = 0
     last_state = None
+    paused_since = None      # 'iPhone 사용 중'이 시작된 시각
+    last_paused_alert = 0.0  # 마지막 알림 시각
     off_logged = False
     last_refresh = 0.0
     fail_streak = 0
@@ -465,6 +481,9 @@ def main():
                 last_state = state
                 global _auto_wait_logged
                 _auto_wait_logged = False
+            if state != "paused":
+                paused_since = None
+                last_paused_alert = 0.0
             if state == "healthy":
                 streak = 0
                 # 감시봇이 '오늘 횟수 확인 대기'(자정 직후 등)면 시트를 주기적으로 새로고침해 N회 표시를 갱신
@@ -475,6 +494,13 @@ def main():
                 # 폰을 잠갔는지 화면만으로는 모름 → 매 주기 [연결] 클릭. 붙으면 다음 사이클에 healthy/unhealthy로 이어짐
                 press_connect(b, FRAME)
                 streak = 0
+                # 이 상태는 사람이 폰을 잠가야만 풀린다. 조용히 방치하면 감시가 통째로 죽는다(9/20: 7시간)
+                if paused_since is None:
+                    paused_since = time.time()
+                elapsed = time.time() - paused_since
+                if elapsed >= PAUSED_ALERT_AFTER and time.time() - last_paused_alert >= PAUSED_ALERT_REPEAT:
+                    last_paused_alert = time.time()
+                    notify_paused(int(elapsed // 60))
             else:
                 streak += 1
                 if streak >= UNHEALTHY_STREAK:
