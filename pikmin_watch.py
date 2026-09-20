@@ -952,7 +952,11 @@ def main():
         migrated[f"{head}|{norm_loc(loc)}"] = max(v, migrated.get(f"{head}|{norm_loc(loc)}", 0))
     if migrated != {k: v for k, v in old_cards.items() if "|" in k}:
         log(f"known_cards 키 정규화 마이그레이션: {len(old_cards)}개 → {len(migrated)}개")
+    # full_rooms(5명 차서 티켓을 요구한 카드)는 재시작을 넘어 유지해야 한다.
+    # 안 그러면 봇을 껐다 켤 때마다 같은 풀방 카드를 다시 클릭한다(9/20).
     state = {"sprites": [], "rejected": [], "known_cards": migrated,
+             "full_rooms": {k: v for k, v in (old.get("full_rooms") or {}).items()
+                            if time.time() - v < FULL_ROOM_TTL},
              "quiet_until": old.get("quiet_until", 0), "armed_day": old.get("armed_day")}
     sprite_first = True
     candidates = []       # 맵 신규 아이콘 연속 관측 후보
@@ -1090,7 +1094,9 @@ def main():
                 if seen_cards:
                     log(f"시작 시 보이는 거대 카드(참가 대상으로 취급): {list(seen_cards.values())}")
                 save_state(state)
-                zero_in_map(win[1])
+                # 영점조준(첫 카드 탭→뒤로가기) 제거 — 9/20 사용자 지적.
+                # 첫 카드가 해외(초대받은 원거리 거대)인 경우가 많아, 지도를 엉뚱한 곳으로
+                # 보내거나 무의미한 클릭이 된다. 지도 정렬은 사람이 필요할 때 직접 한다.
                 sprite_first = False
                 time.sleep(INTERVAL_SEC)
                 continue
