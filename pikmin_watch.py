@@ -56,6 +56,7 @@ CONFIRM_FRAMES = 2
 # 참가자 줄의 '당신' 유무로 판정한다(당신 있으면 조용히 넘어가고, 없으면 새 출현이므로 참가).
 # 다만 주 판정은 리스트 위치다: 참가한 카드는 첫 화면에 오지 않고 맨 뒤로 밀리므로
 # '버섯 개수: 1/M'인 화면에 거대 카드가 보이면 그건 안 들어간 것으로 확정할 수 있다(parse_card_page).
+FULL_ROOM_TTL = 3600           # 티켓을 요구한(=5명 찬) 카드를 이 시간(초) 동안 다시 건드리지 않는다
 FIRSTPAGE_RETRY_SEC = 120      # 첫 화면의 미참가 거대에 재시도하는 최소 간격(초). 꽉 찬 방 대비
 KNOWN_CARD_RECHECK_SEC = 1800  # 보조 안전망: 카루셀이 앞으로 안 돌아와 위치 신호를 못 쓸 때의 재확인 간격
 KNOWN_CARD_TTL = 86400         # 캐시 하드 만료(초)
@@ -685,9 +686,20 @@ def finish_join(wid, b):
             p = join_snap(f, "ticket_declined")
             if cancel:
                 tap(b, cancel[0], cancel[1])
-                log(f"참가 중단: 티켓 등 자원을 요구하는 팝업 → 취소 누름 snap={p}")
+                log(f"참가 중단: 티켓 요구 팝업 → 취소 탭 snap={p}")
             else:
-                log(f"참가 중단: 티켓 등 자원을 요구하는 팝업(취소 버튼 못 찾음) snap={p}")
+                log(f"참가 중단: 티켓 요구 팝업(취소 버튼 못 찾음) snap={p}")
+            # 탭이 씹힐 수 있으므로 팝업이 실제로 닫혔는지 확인하고, 안 닫혔으면 ESC로 닫는다
+            for _ in range(3):
+                time.sleep(0.6)
+                if not capture_window(wid, f):
+                    break
+                if not any(w in " ".join(t.strip() for t, _, _ in ocr_boxes(f))
+                           for w in COST_CONFIRM_WORDS):
+                    log("티켓 팝업 닫힘 확인")
+                    break
+                subprocess.run([CLICLICK, "kp:esc"], capture_output=True)
+                log("티켓 팝업이 남아 있어 ESC 전송")
             return "needs_ticket"
         ok = next(((x, y) for t, x, y in bx if t.strip() in ("확인", "OK", "네", "예")), None)
         if ok:
@@ -854,6 +866,11 @@ def handle_new_giant(win, state, reason, prefer_keys=None, map_xy=None, alert_on
             save_state(state)
             log("5명 찬 방(참가 버튼 없음) → 알림 생략")
             return
+        if res in ("needs_ticket", "full_room"):
+            fr = state.setdefault("full_rooms", {})
+            for k5 in (prefer_keys or []):
+                fr[k5] = time.time()
+            save_state(state)
         if res == "needs_ticket":
             # 5명이 찬 방 — 티켓을 써야만 들어갈 수 있다. 티켓은 유한하므로 봇이 임의로 쓰지 않는다.
             # 같은 카드로 반복 시도하지 않도록 확인 시각만 기록하고 조용히 끝낸다.
@@ -1164,8 +1181,16 @@ def main():
             # 풀방이면 애초에 뒤로 밀리므로 여기서 티켓 팝업을 만날 일도 거의 없다.
             page = parse_card_page(texts)
             first_page = page is not None and page[0] == 1
+            # 5명이 차서 티켓을 요구했던 카드는 일정 시간 아예 건드리지 않는다(9/20 사용자 지시:
+            # "이미 5명 차있는 카드는 클릭 안 하는 룰"). 참가 버튼이 있어도 GO까지 누른 뒤에야
+            # 티켓 팝업으로 풀방임을 알게 되는 구조라, 한 번 겪은 카드는 기억해서 재시도를 막는다.
+            full_rooms = state.setdefault("full_rooms", {})
+            state["full_rooms"] = {k: v for k, v in full_rooms.items() if now - v < FULL_ROOM_TTL}
+            full_rooms = state["full_rooms"]
             fresh_keys, recheck_keys = [], []
             for k2 in seen_cards:
+                if any(same_card(k2, fk) for fk in full_rooms):
+                    continue                 # 풀방으로 확인된 카드 — 클릭하지 않는다
                 hit = known_card_key(known_cards, k2)
                 if hit is None:
                     fresh_keys.append(k2)                                   # 처음 보는 카드
