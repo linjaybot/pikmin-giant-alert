@@ -305,6 +305,19 @@ def giant_card_boxes(boxes):
     return out
 
 
+def title_is_red(frame_path, cx, cy):
+    """카드 제목이 빨간 글씨인지 = 오늘 내가 이미 참가 중인 버섯(11/01 실측: 참가 카드 빨강 682·647px/검정 0,
+    미참가 카드 빨강 0/검정 866px). 제목 중심 ±70×±14px(644폭)에서 빨강 vs 검정 글자 픽셀 수 비교"""
+    img = _scaled_frame(frame_path)
+    if img is None:
+        return False
+    y0, y1, x0, x1 = max(0, int(cy - 14)), int(cy + 14), max(0, int(cx - 70)), int(cx + 70)
+    h, s, v = cv2.split(cv2.cvtColor(img[y0:y1, x0:x1], cv2.COLOR_BGR2HSV))
+    red = int((((h <= 10) | (h >= 170)) & (s > 120) & (v > 120)).sum())
+    dark = int((v < 90).sum())
+    return red > 100 and red > dark
+
+
 def norm_loc(loc):
     """장소명을 키로 정규화. 말줄임/공백/문장부호 제거 후 앞 LOC_KEY_LEN자.
 
@@ -1305,6 +1318,18 @@ def main():
                 log(f"끝난 버섯(보상 수령 화면: '{done_hit.strip()[:30]}') → 알람 생략 "
                     f"{[seen_cards[k2] for k2 in fresh_keys]}")
                 fresh_keys = []
+
+            # ⛔ 11/01 18:06 오탐: 이미 참가한 거대(제목이 빨간 글씨, 리스트 뒤쪽 9/12)가 리스트를 넘기다
+            #    처음 화면에 들어오자 '처음 보는 카드'로 알람. 빨간 제목 = 참가 중 → 기록만 하고 넘어간다.
+            if fresh_keys:
+                pos = {k: (x, y) for k, _, x, y in giant_card_boxes(boxes)}
+                joined = [k2 for k2 in fresh_keys if k2 in pos and title_is_red(tmp, *pos[k2])]
+                if joined:
+                    for k2 in joined:
+                        known_cards[k2] = now
+                    save_state(state)
+                    log(f"이미 참가 중(빨간 제목) → 알람 생략 {[seen_cards[k2] for k2 in joined]}")
+                    fresh_keys = [k2 for k2 in fresh_keys if k2 not in joined]
 
             if fresh_keys:
                 # 카드는 OCR로 '거대' 글자를 직접 읽은 것이라 확신도가 높다 → 연속 관측 기다리지 않고
