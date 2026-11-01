@@ -72,7 +72,8 @@ CARD_LOC_DX = 170            # 제목-장소 가로 중심 거리 허용치(카�
 # 사이즈 기반 후보 검출 + LLM 최종 판정 (거대버섯 생김새가 매달 바뀌어도 동작)
 GIANT_R_LO = 15              # 내접원 반지름(px, 644폭 기준) 이상이면 거대 후보
 REJECT_RADIUS = 80           # LLM이 기각한 위치 재질의 억제 반경
-LLM_COOLDOWN = 60            # LLM 판정 최소 간격(초)
+BIG_SECOND_OPINION_R = 28     # 이 반지름 이상 후보는 LLM 기각 시 재질의(일반 군집은 20 안팎, 거대는 31)
+LLM_COOLDOWN = 15            # LLM 판정 최소 간격(초). 60이면 후보 여럿일 때 거대가 몇 분 밀림(11/01)
 LLM_TIMEOUT = 120
 # 비전 판정이 CLUSTER(군집)라 애매할 때만 하단 카드 리스트를 끝까지 넘겨 거대 카드가 있는지 확인(사용자 요청 8/16)
 SWEEP_ON = ("CLUSTER",)
@@ -89,6 +90,9 @@ CLICLICK = "/opt/homebrew/bin/cliclick"
 # (8/2 재알람 사태 원인: 즉시 삭제 → 재등장 시 새 거대로 착각)
 SPRITE_GRACE_SEC = 300
 REJECT_GRACE_SEC = 600
+# 재시작 시 넘겨받을 '확정 거대'의 유효기간(초). 이 안에 이미 알람을 울린 거대는 다시 울리지 않는다.
+# 거대버섯 수명이 몇 시간이라 6시간이면 충분하고, 지나면 어차피 사라져 있다.
+SPRITE_CARRY_TTL = 6 * 3600
 CLAUDE_CLI = os.path.expanduser("~/.local/bin/claude")
 MAP_REGION_RATIO = 0.46
 REF_FRAME_WIDTH = 644
@@ -99,13 +103,18 @@ FROZEN_FRAMES = 3            # 이 횟수 연속 완전 동일 화면이면 멈�
 WINDOW_OWNERS = ("iPhone Mirroring", "iPhone 미러링")
 # 운영 시간: 한국시간 토 00:00 ~ 월 00:00 (48시간). 평일엔 화면이 떠 있어도 감시 안 함
 KST = ZoneInfo("Asia/Seoul")
-ACTIVE_WEEKDAYS = (5, 6)     # 토=5, 일=6
+# 2026-10-30 사용자 확인: 평일(금)에도 거대가 뜬다 → 주말 한정 가정이 틀렸으므로 매일 감시.
+# 주말만 돌리려면 (5, 6)으로 되돌리면 된다. (월=0 … 토=5, 일=6)
+ACTIVE_WEEKDAYS = (0, 1, 2, 3, 4, 5, 6)
 # 하루 도전 횟수: "오늘은 앞으로 N회". 0회를 보면 그날 자정까지 알림 정지, 다음날 N>0을 봐야 재개
 REMAIN_RE = re.compile(r"앞으로\s*(\d+)\s*회")
 
 # 자동 참가 (8/22 사용자 요청): 새 거대를 알림 대신 봇이 직접 참가. 실패 시에만 알림 폴백.
 # 흐름: 하단 리스트에서 해당 '거대' 카드 탭 → 상세 화면의 '참가' 버튼 탭. 실기 검증 전 — 단계 스크린샷을 joins/에 남김
-AUTO_JOIN = True
+# ⛔ 2026-10-24 사용자 지시로 OFF: "거대봇 찾으면 그냥 알람만 울려. 들어가려고 하지말고."
+#    False면 참가 블록 전체를 건너뛰고 곧장 alert_until_confirm()로 간다 = 화면을 일절 탭하지 않고
+#    알람만 울린다. 참가는 사용자가 직접 한다. 다시 켜려면 True로만 되돌리면 된다.
+AUTO_JOIN = False
 JOIN_BUTTON_TEXTS = ("참가", "참가하기", "참여")
 # 피크민 선택 화면 우하단의 전송 버튼. 현재 스킨은 동그란 'GO' 버튼(9/13 실측 (556,1275) 부근)
 GO_BUTTON_TEXTS = ("GO", "GO!", "전송", "확정", "보내기")
@@ -118,6 +127,9 @@ CANCEL_TEXTS = ("취소", "아니오", "닫기", "Cancel")
 JOIN_MAX_SWIPES = 16
 # 맵 아이콘을 탭해서 열린 상세가 이 문구를 포함하면 버섯이 아님(과일 탐험 등) → 오탐 기각 (8/23 레몬 사건)
 NOT_GIANT_MARKERS = ("탐험으로", "피크민을 탐험에", "발견한 날")
+# 이미 끝난 버섯의 보상 수령 화면 표식. 이때도 카드 제목의 '거대' 글자는 남아 있어 새 거대로 오인된다
+# (10/24 17:48 오탐). 끝난 버섯은 참가할 수 없으므로 알람을 울리지 않는다.
+DONE_MARKERS = ("제거 완료", "보상을 획득", "보상 획득")
 # 거대 상세 화면에 있다는 표식. 상세까지 갔는데 '참가' 버튼도 '당신'도 없으면
 # = 5명이 차서 못 들어가는 방(초대받은 카드는 못 들어가도 1번에 온다 — 9/20 사용자 확인).
 # 이건 봇 잘못이 아니므로 알람을 울리지 않는다. 반대로 상세에 못 들어간 것(리스트 그대로)은 탭 실패다.
@@ -133,6 +145,8 @@ HB_PATH = os.path.join(BASE, "heartbeat.json")
 FRAME_DIR = os.path.join(BASE, "frames")   # 진단용 프레임 링버퍼(놓친 거대 사후 확인용)
 FRAME_EVERY = 30                            # 초
 FRAME_KEEP = 240                            # 장 (=2시간)
+CAPTURE_KEEP_DAYS = 3                       # frames/hits/joins 캡처는 최근 N일치만 남기고 삭제
+CAPTURE_PRUNE_EVERY = 3600                  # 초 — 오래된 캡처 정리 주기
 
 
 def now_kst():
@@ -409,7 +423,25 @@ def find_size_candidates(frame_path):
     m = img[: int(img.shape[0] * MAP_REGION_RATIO), :]
     hsv = cv2.cvtColor(m, cv2.COLOR_BGR2HSV)
     h, s, v = cv2.split(hsv)
-    mask = ((s > 100) & (v > 100) & ~((h >= 40) & (h <= 75))).astype(np.uint8) * 255
+    vivid = (s > 100) & (v > 100) & ~((h >= 40) & (h <= 75))
+    # ⛔ 11/01 16:34 놓침: 크림·베이지 파스텔 거대(화려한 버섯)는 채도가 100 아래라 마스크에서 통째로 빠졌다
+    #    → 반지름 3.6px로 후보조차 안 됨, 결국 사용자가 직접 보고 참가. 연한 비초록색도 포함한다.
+    #    (흰 도로·꽃은 채도 35 미만이라 안 걸림. 늘어난 소형 군집 후보는 LLM이 MEDIUM/CLUSTER로 기각)
+    pastel = (s >= 35) & (v >= 150) & ~((h >= 33) & (h <= 95))
+    mask = (vivid | pastel).astype(np.uint8) * 255
+    # ⛔ 10/24 17:59 오탐: 현위치 파란 점도 '채도 높은 비초록 덩어리'라 이 마스크를 통과한다.
+    #    줌이 빠져 점과 주변 소형 버섯이 붙으면 한 덩어리가 되어 반지름이 28px까지 부풀고
+    #    거대 후보로 올라갔다(점에서 18px 거리). 점 자리만 도려내 반지름 부풀림을 막는다.
+    #    ※ 파란 '버섯'까지 지우면 안 되므로 전체 파랑이 아니라 점 블롭 위치만 지운다.
+    try:
+        import mapcenter
+        _dot = mapcenter.find_gps_dot(frame_path)
+    except Exception:
+        _dot = None
+    if _dot:
+        dx, dy, darea = _dot
+        dr = int((darea / 3.1416) ** 0.5) + 4      # 블롭 면적 → 반지름 + 여유
+        cv2.circle(mask, (dx, dy), dr, 0, -1)
     closed = cv2.morphologyEx(
         mask, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9)))
     dist = cv2.distanceTransform((closed > 0).astype(np.uint8), cv2.DIST_L2, 5)
@@ -422,6 +454,7 @@ def find_size_candidates(frame_path):
                 break
         else:
             out.append({"x": int(x), "y": int(y), "score": float(dist[y, x]), "tpl": "size"})
+    out.sort(key=lambda c: -c["score"])          # 큰 덩어리부터 LLM 판정(거대가 군집 뒤에 줄 서지 않게)
     return out
 
 
@@ -442,10 +475,19 @@ def llm_is_giant(frame_path, x, y):
         "- GIANT: 거대버섯. 버섯 갓 하나가 맵의 다른 어떤 버섯보다 압도적으로 커서 소형 버섯의 "
         "3배 이상이고, 도로 교차로 하나를 덮을 정도의 크기.\n"
         "- MEDIUM: 중형 버섯. 소형보다 크지만 2배 안팎 수준.\n"
-        "- CLUSTER: 소형·중형 버섯 여러 개가 모여 있는 군집.\n"
+        "- CLUSTER: 비슷한 크기의 소형·중형 버섯이 여럿 모여 있고, 그중 압도적으로 큰 것이 "
+        "하나도 없는 경우만 CLUSTER다.\n"
+        "  참고: 거대버섯도 주변에 작은 버섯을 거느리고 있는 경우가 많다. 작은 것이 붙어 있다는 "
+        "이유만으로 CLUSTER라고 단정하지는 마라. 판단 기준은 '갓 하나가 윤곽이 뚜렷하게 구분되면서 "
+        "소형의 3배 이상으로 압도적으로 큰가'이다.\n"
         "- OTHER: 버섯이 아닌 것 (플레이어/다른 유저 아바타, 장식, 모종 화분, 피크민, "
         "그리고 레몬·사과·배 등 대형 과일(탐험 오브젝트) 포함 — 과일은 아무리 커도 GIANT가 아님. 8/23 레몬 오탐).\n"
-        "전체 화면의 다른 버섯들과 크기를 비교해서 판단하고, 확실하지 않으면 GIANT라고 답하지 마라. "
+        "전체 화면의 다른 버섯들과 크기를 비교해서 판단하고, 확실하지 않으면 GIANT라고 답하지 마라.\n"
+        "⚠️ 맵이 넓게 축소(줌아웃)돼 있으면 작은 버섯 여러 개가 겹쳐서 하나의 큰 덩어리처럼 보인다. "
+        "전체 화면에 동네 이름이 여러 개 보일 만큼 넓은 범위라면 특히 조심하라. "
+        "갓 하나하나의 윤곽이 뚜렷이 구분되지 않고 뭉쳐 보이면 GIANT가 아니라 CLUSTER다 "
+        "(10/24 17:59 오탐: 줌아웃된 맵에서 소형 버섯 무리를 거대로 오판).\n"
+        "거대버섯 위에 피크민·마차(버스)가 겹쳐 그려져 있으면 그건 피크민이 도전하러 간 표시일 뿐이니 무시하고 버섯 크기로만 판단하라.\n"
         "마지막 줄에 분류 단어 하나만 출력하라."
     )
     try:
@@ -584,7 +626,7 @@ def alert_until_confirm(reason):
         "osascript", "-e",
         'display dialog "🍄 새 거대버섯 나타남!" '
         'with title "거대버섯" buttons {"확인"} default button 1 '
-        'with icon caution giving up after 60',
+        'with icon caution giving up after 30',   # 2026-10-24 사용자 지시: 60초 → 30초
     ])
     while dialog.poll() is None:
         heartbeat("alert")
@@ -919,6 +961,31 @@ def keep_frame(tmp):
         pass
 
 
+_last_prune = 0.0
+
+
+def prune_captures():
+    """frames/hits/joins에서 CAPTURE_KEEP_DAYS일보다 오래된 캡처 이미지를 삭제 (1시간마다)"""
+    global _last_prune
+    now = time.time()
+    if now - _last_prune < CAPTURE_PRUNE_EVERY:
+        return
+    _last_prune = now
+    cutoff = now - CAPTURE_KEEP_DAYS * 86400
+    removed = 0
+    for d in (FRAME_DIR, SNAP_DIR, JOIN_DIR):
+        try:
+            for f in os.listdir(d):
+                p = os.path.join(d, f)
+                if f.endswith(".png") and os.path.isfile(p) and os.path.getmtime(p) < cutoff:
+                    os.remove(p)
+                    removed += 1
+        except Exception:
+            pass
+    if removed:
+        log(f"오래된 캡처 {removed}장 삭제 ({CAPTURE_KEEP_DAYS}일 초과)")
+
+
 def snap(tmp):
     p = os.path.join(SNAP_DIR, datetime.now().strftime("hit_%Y%m%d_%H%M%S.png"))
     subprocess.run(["cp", tmp, p])
@@ -954,11 +1021,24 @@ def main():
         log(f"known_cards 키 정규화 마이그레이션: {len(old_cards)}개 → {len(migrated)}개")
     # full_rooms(5명 차서 티켓을 요구한 카드)는 재시작을 넘어 유지해야 한다.
     # 안 그러면 봇을 껐다 켤 때마다 같은 풀방 카드를 다시 클릭한다(9/20).
-    state = {"sprites": [], "rejected": [], "known_cards": migrated,
+    # ⛔ 10/24 사고: 재시작하면 화면에 떠 있던 거대를 전부 기준선으로 등록해 영구히 묵살했다.
+    #    (14:14 재시작 → 맵 한가운데 거대가 기준선 (320,368)로 박힘 → 끝까지 알람 없음,
+    #     사용자가 직접 발견해서 들어감). 9/13에 '카드'에 대해 고친 것과 똑같은 버그가
+    #     '맵 아이콘'에는 남아 있었다.
+    # 이제 재시작은 화면을 백지로 보지 않는다. 이미 LLM이 거대로 확정한 것(tpl != 'size')만
+    # 넘겨받아 중복 알람을 막고, 확정 안 된 것은 평소 경로대로 다시 판정해 거대면 알람한다.
+    carried = [s for s in (old.get("sprites") or [])
+               if s.get("tpl") != "size" and time.time() - s.get("ts", 0) < SPRITE_CARRY_TTL]
+    state = {"sprites": carried, "rejected": [], "known_cards": migrated,
              "full_rooms": {k: v for k, v in (old.get("full_rooms") or {}).items()
                             if time.time() - v < FULL_ROOM_TTL},
              "quiet_until": old.get("quiet_until", 0), "armed_day": old.get("armed_day")}
-    sprite_first = True
+    if carried:
+        log(f"재시작: 확정 거대 {len(carried)}건 인계 → 중복 알람 방지 "
+            f"{[(s['x'], s['y']) for s in carried]}")
+    # 시작 시 기준선 등록 안 함 — 화면에 거대가 떠 있으면 알려야 한다.
+    # 기준선은 '정지 → 재개' 때만 쓴다(음소거 중에 뜬 것은 새 거대가 아니므로).
+    sprite_first = False
     candidates = []       # 맵 신규 아이콘 연속 관측 후보
     card_streak = 0       # 카드 수 증가 연속 관측
     last_invite_alert = 0.0
@@ -972,6 +1052,7 @@ def main():
 
     while True:
         try:
+            prune_captures()
             if not in_service_window():
                 heartbeat("off_hours")       # 평일: 아무것도 안 봄
                 candidates = []
@@ -1135,6 +1216,12 @@ def main():
                             new_candidates.append({"x": g["x"], "y": g["y"], "hits": hits})
                             continue
                         verdict, label = res
+                        if not verdict and g.get("score", 0) >= BIG_SECOND_OPINION_R:
+                            # 11/01: 같은 거대를 한 번은 GIANT, 다른 프레임에선 CLUSTER로 판정(피크민 버스가
+                            # 겹쳐 보일 때). 덩어리가 아주 큰 후보는 기각 전에 한 번 더 묻는다(지연은 기각 때만)
+                            res2 = llm_is_giant(tmp, g["x"], g["y"])
+                            if res2 and res2[0]:
+                                verdict, label = res2
                         if not verdict:
                             log(f"LLM 기각(군집/기타): ({g['x']},{g['y']})")
                             rejected.append({"x": g["x"], "y": g["y"]})
@@ -1206,6 +1293,19 @@ def main():
                     recheck_keys.append(k2)      # 첫 화면 = 지금 참가 가능(리스폰이거나 자리가 났음)
                 elif now - known_cards[hit] >= KNOWN_CARD_RECHECK_SEC:
                     recheck_keys.append(k2)      # 위치 신호를 못 쓴 경우의 보조 안전망
+            # ⛔ 10/24 오탐: '버섯 제거 완료! 새로운 버섯에 참가하기 전에 보상을 획득하세요' 배너가
+            #    떠 있는 보상 수령 화면에서도 카드 제목의 '거대' 글자는 그대로 남아 있다.
+            #    이미 끝난 버섯인데 새 거대로 읽고 알람을 울렸다(17:48 '거대 핼러윈 버섯 @ Frame Pavilion').
+            #    끝난 버섯은 들어갈 수 없으므로 알리지 않는다.
+            done_hit = next((t for t in texts if any(w in t for w in DONE_MARKERS)), None)
+            if fresh_keys and done_hit:
+                for k2 in fresh_keys:
+                    known_cards[k2] = now     # 다시 묻지 않게 기록만
+                save_state(state)
+                log(f"끝난 버섯(보상 수령 화면: '{done_hit.strip()[:30]}') → 알람 생략 "
+                    f"{[seen_cards[k2] for k2 in fresh_keys]}")
+                fresh_keys = []
+
             if fresh_keys:
                 # 카드는 OCR로 '거대' 글자를 직접 읽은 것이라 확신도가 높다 → 연속 관측 기다리지 않고
                 # 즉시 처리한다(9/13 수정: 예전엔 CONFIRM_FRAMES=2 때문에 6초를 그냥 버렸다.

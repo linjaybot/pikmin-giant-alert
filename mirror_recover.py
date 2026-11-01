@@ -131,6 +131,56 @@ def image_size(path):
         return im.size
 
 
+_recenter_streak = 0
+_last_recenter = 0.0
+
+
+def recenter_map(b, frame):
+    """맵이 내 위치를 벗어났으면 현위치 버튼을 눌러 되돌린다.
+
+    연속 RECENTER_STREAK회 이탈 + 쿨다운 경과일 때만 누른다.
+    사용자가 의도적으로 맵을 둘러보는 중일 수 있어 즉시 뺏지 않는다.
+    """
+    global _recenter_streak, _last_recenter
+    try:
+        import mapcenter
+        r = mapcenter.check(frame)
+    except Exception as e:
+        log(f"현위치 점검 오류: {e}")
+        return False
+
+    if r["ok"] is None:          # 맵 화면이 아님 등 — 판단 보류
+        _recenter_streak = 0
+        return False
+    if r["ok"]:
+        if _recenter_streak:
+            log(f"맵 제자리 복귀 — 이탈 연속 {_recenter_streak}회에서 해제")
+        _recenter_streak = 0
+        return False
+
+    _recenter_streak += 1
+    if _recenter_streak < RECENTER_STREAK:
+        log(f"맵 이탈 감지 {_recenter_streak}/{RECENTER_STREAK} — {r['reason']}")
+        return False
+    if time.time() - _last_recenter < RECENTER_COOLDOWN:
+        return False
+
+    btn = mapcenter.find_recenter_button(frame)
+    if btn is None:
+        log(f"맵 이탈({r['reason']})인데 현위치 버튼을 못 찾음 — 누르지 않음")
+        _recenter_streak = 0
+        return False
+
+    # mapcenter 좌표는 644폭 기준 → 실제 이미지 픽셀로 환산해서 클릭
+    iw, _ = image_size(frame)
+    k = iw / mapcenter.REF_FRAME_WIDTH
+    ok, x, y = click_image_point(b, frame, btn[0] * k, btn[1] * k)
+    _last_recenter = time.time()
+    _recenter_streak = 0
+    log(f"현위치 버튼 탭 ({x},{y}) ok={ok} — {r['reason']}")
+    return ok
+
+
 def llm_decide(frame):
     prompt = (
         f"Read {frame} — 맥의 아이폰 미러링 창 스크린샷이다(이미지 크기는 창의 2배 해상도일 수 있음). "
@@ -274,6 +324,13 @@ def wait_for(wid, b, seconds, step=3):
 
 HB_PATH = os.path.join(BASE, "heartbeat.json")
 REFRESH_EVERY = 180        # 자정 후 '횟수 확인 대기' 상태면 이 간격으로 탐험 시트 새로고침(탭 전환)
+
+# ── 맵 현위치 복구 (2026-10-24 사용자 승인) ──
+# 맵이 내 GPS에서 벗어나 넓게 빠져 있으면 거대 아이콘이 작게 그려져 크기 기준에 못 미쳐 조용히 놓친다.
+# classify()는 하단 탭만 보고 healthy를 주므로 이 상태를 못 잡는다 → 별도로 본다.
+# 누르는 건 우하단 흰 원형 '현위치' 버튼 하나뿐. 버섯·참가·리스트는 절대 건드리지 않는다.
+RECENTER_STREAK = 3        # 연속 N회(=N×INTERVAL초) 이탈이어야 누른다. 사용자가 잠깐 둘러보는 걸 뺏지 않기 위함
+RECENTER_COOLDOWN = 300    # 한 번 누른 뒤 이 시간(초) 동안은 다시 누르지 않는다
 
 
 def watch_status():
@@ -486,6 +543,9 @@ def main():
                 last_paused_alert = 0.0
             if state == "healthy":
                 streak = 0
+                # 하단 탭이 보인다고 끝이 아니다 — 맵이 내 위치를 잡고 있는지 따로 확인한다.
+                # 벗어나 있으면 거대가 작게 그려져 크기 기준에 걸리지 않아 조용히 놓친다.
+                recenter_map(b, FRAME)
                 # 감시봇이 '오늘 횟수 확인 대기'(자정 직후 등)면 시트를 주기적으로 새로고침해 N회 표시를 갱신
                 if watch_status() == "not_armed" and time.time() - last_refresh > REFRESH_EVERY:
                     last_refresh = time.time()
